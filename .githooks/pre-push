@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Refuse a push unless the merchant console's tests, lint and build pass
+# against exactly the commit being pushed.
+#
+# Installed by scripts/install-hooks.sh. Do not bypass it with --no-verify;
+# if it is wrong, fix the hook.
+
+set -uo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+app="$root/build-battle/merchant-console"
+head_sha="$(git rev-parse HEAD)"
+zero="0000000000000000000000000000000000000000"
+
+fail() {
+  echo "pre-push: $1" >&2
+  echo "pre-push: push refused. Nothing left this machine." >&2
+  exit 1
+}
+
+# What is being pushed. Each line: <local ref> <local sha> <remote ref> <remote sha>
+pushing=0
+while read -r local_ref local_sha _remote_ref _remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue # a branch delete carries no code
+  pushing=1
+  if [ "$local_sha" != "$head_sha" ]; then
+    fail "$local_ref is not the checked-out commit. The checks run on the working tree, so check out that branch and push from there."
+  fi
+done
+[ "$pushing" -eq 0 ] && exit 0
+
+if [ ! -d "$app" ]; then
+  echo "pre-push: no build-battle/merchant-console in this checkout, nothing to verify."
+  exit 0
+fi
+
+# The checks run on the working tree, so it has to match the commit.
+if [ -n "$(git status --porcelain -- "$app")" ]; then
+  git status --short -- "$app" >&2
+  fail "uncommitted changes in the merchant console. Commit or discard them so the checks test what you push."
+fi
+
+if [ ! -d "$app/node_modules" ]; then
+  fail "no node_modules in $app. Run 'npm ci' there first."
+fi
+
+run() {
+  echo "pre-push: npm $*"
+  if ! (cd "$app" && npm "$@"); then
+    fail "'npm $*' failed."
+  fi
+}
+
+run test
+run run lint
+run run build
+
+echo "pre-push: tests, lint and build passed for $(git rev-parse --short HEAD)."
